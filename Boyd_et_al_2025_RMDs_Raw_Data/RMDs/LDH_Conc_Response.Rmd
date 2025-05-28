@@ -1,0 +1,166 @@
+---
+title: "LDH Concentration-Response Modeling"
+author: Sierra Boyd
+output:
+  html_document:
+    theme:
+    toc: false
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+```{r load packages}
+
+library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(magrittr)
+library(ggplot2)
+library(ggpubr)
+library(ggpattern)
+library(tcpl)
+library(tcplfit2)
+library(stringr)
+library(data.table)
+library(openxlsx)
+library(readxl)
+library(conflicted)
+
+conflicts_prefer(purrr::transpose())
+conflicts_prefer(dplyr::filter())
+
+```
+
+
+#Import files and arrange data
+```{r}
+#Indicate input directory
+project.input.dir <-"~"
+
+#Make list of data files 
+csv_files<- list.files(path=project.input.dir, pattern = "LDH\\.csv$", recursive = T, full.names = T) 
+
+#Make vector for what the names of the basenames of the data files
+data_frame_names<-gsub(".csv","",basename(csv_files))
+
+#Read in data file, melt to long format, and create an identifier
+for (i in csv_files){
+  df<-fread(i)
+  df <- melt(df, id.vars = c("Dose"),
+                          measure.vars=c("Loperamide_Plate1","Loperamide_Plate2","Loperamide_Plate3","Dieldrin_Plate1","Dieldrin_Plate2","Dieldrin_Plate3","Dieldrin_Plate4","Deltamethrin_Plate1","Deltamethrin_Plate2","Deltamethrin_Plate3","Deltamethrin_Plate4","Glyphosate_Plate1","Glyphosate_Plate2","Glyphosate_Plate3","Glyphosate_Plate4"),variable.name="Identifer", value.name="rval")
+  df<-separate(df, Identifer, into=c("Chemical","Plate"), sep="_")
+  df<-as.data.table(df)
+  LDH<-df
+}
+  
+```
+
+
+```{r}
+#Remove any na values
+LDH <- subset(LDH, !is.na(rval))
+
+#update nomenclature
+LDH$acnm<-"LDH"
+
+#Create Binary column to indicate controls
+LDH <- LDH[, wllt := ifelse(Dose %in% 0e+00, 'n','t')]
+
+#calculate baseline value or median of controls
+LDH[,bval:=median(rval[wllt=='n']),by=Plate]
+
+#Calculate Response by normalizing to bval
+LDH <- LDH[,resp := ((rval - bval) / bval)* 100]
+
+#calculate mad of baseline values
+LDH[, bmad := mad(resp[wllt %in% 'n'])]
+
+#Set cut off to 3*bmad
+#LDH[, coff := 3*bmad]
+LDH[, coff := 24.2]
+
+#Set cut off as 30 if greater than 30 or less than 10
+#LDH$coff[LDH$coff>=30]<-30
+#LDH$coff[LDH$coff<=20]<-30 #Adjusted since the bmad was not in the historical range- historical for LDH is 24.2 in the rat NFA assay
+LDH[, onesd := sd(resp[wllt %in% 'n'])]
+
+LDH$resp<-as.numeric(LDH$resp)
+
+#Need to mutate controls so we can do log10 of doses 
+LDH <- LDH %>%
+  mutate(
+    Dose = ifelse(Dose == 0.0000,0.0001,Dose )
+  )
+
+#Update nomenclature
+setnames(LDH,"Dose","conc")
+setnames(LDH,"Chemical","trt")
+
+LDH<-LDH%>%filter(!conc==0.0001)
+
+```
+
+
+#Fit to curve using tcplfit2
+##End results are in res table (ignore res_1)
+```{r}
+# create empty vectors
+res <- data.frame()
+datalist <- list()
+
+
+#set up for loop to call acnm and chemical 
+for(i in 1:length(unique(LDH$acnm))){
+  this.aenm <- unique(LDH$acnm)[i]
+  aenm.temp <- LDH[acnm == this.aenm, ]
+  #aenm.temp[, aenm := this.aenm]
+  for(j in 1:length(unique(aenm.temp$trt))){ # used ii so that i isn't being overwritten
+    this.trt <- unique(aenm.temp$trt)[j]
+    this.apid <- unique(aenm.temp[trt %in% this.trt, Plate]) # need to subset by apid
+    temp <- aenm.temp[trt == this.trt | (Plate %in% this.apid & wllt %in% 'n'), ]
+    temp[, trt := trt]
+    row = list(conc=temp$conc, # use conc from the subset
+               resp=temp$resp, # use resp from the subset, note from 03/04/2024: resp is not getting updated by chemical it's all the same for each row
+               bmed= 0, # 0 since we are working with a normalized percent scale
+               cutoff= unique(temp$coff), # find cutoff using 3bmad for EACH aenm (i)
+               # cutoff= unique(temp$coff), # find cutoff using 3bmad for EACH aenm (i)
+               onesd= unique(temp$onesd), # find sd for EACH aenm (i)
+               name= this.trt, # update here as well
+               assay= unique(temp$acnm)) # instead of assay we can use this to identify the endpoint for each curve fit 
+    # run concentration-response modeling (1st plotting option)
+    out = concRespCore(row,
+                       fitmodels = c("cnst", "hill", "gnls", "poly1", "poly2", "pow", "exp2", "exp3", "exp4",
+                                     "exp5"),conthits=TRUE,do.plot=FALSE)
+    datalist[[j]] <- out
+    res1 <- do.call(rbind, datalist)
+  }  
+  res <- rbind(res, res1)
+}
+
+
+
+setDT(res)
+#res[, hitc := ifelse(hitcall>=0.9,1,0)]
+#res[hitc==1, c('name','assay')] 
+
+# save res file as an excel
+write.xlsx(res, './Activity_Scan_tcplfit2_SpecificDOPs.xlsx')
+
+
+file.dir <- paste("~", sep="")
+file.name <- paste0("/LDH_res_", Sys.Date(), ".pdf", sep="")
+file.path <- paste(file.dir, file.name, sep="")
+dir.create(path=file.dir, showWarnings = FALSE, recursive = TRUE)
+pdf(file.path, 
+    width = 12, 
+    height = 10)
+# plot results using `concRespPlot`(2nd plotting option)
+for(i in 1:nrow(res)){
+  concRespPlot(res[i,],ymin=-100,ymax=250) 
+}
+
+dev.off()
+```
+
+
+
