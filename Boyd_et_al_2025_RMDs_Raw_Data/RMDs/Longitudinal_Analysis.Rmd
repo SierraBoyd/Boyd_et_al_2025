@@ -31,6 +31,7 @@ conflicts_prefer(dplyr::filter())
 ```
 
 ```{r}
+#Set wd to an an "export" folder
 setwd("~")
 
 ```
