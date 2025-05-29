@@ -118,7 +118,6 @@ data_frame_names<-gsub("_Melt.csv","",basename(csv_files))
 #load csv files
 for (i in csv_files){
   df<-fread(i)
-  df<-df[,-1]
   Network_Scan<-df
 }
 
@@ -200,7 +199,6 @@ data_frame_names<-gsub("_Melt.csv","",basename(csv_files))
 #load csv files
 for (i in csv_files){
   df<-fread(i)
-  df<-df[,-1]
   Axon_Tracking<-df
 }
 
