@@ -32,6 +32,7 @@ conflicts_prefer(dplyr::lag())
 
 
 ```{r}
+#Set wd to an an "export" folder
 setwd("~")
 
 ```
@@ -249,7 +250,6 @@ AllMetrics_melt<-AllMetrics_melt %>% distinct(DOP,Chemical,Dosage,Endpoint,value
 
 #Plot for each plate type over time
 ```{r}
-```{r}
 #Set plate types here. If the plate serial number starts in T it is a 24-well plate, M is for 6-well plate
 AllMetrics_melt<-AllMetrics_melt%>%
   mutate(Plate_Type=ifelse(grepl("T",Group_ID),"Twenty Four","Six"))
@@ -305,7 +305,7 @@ ggsave("NetworkScan_By_PlateType.png",plot=NetworkScan_By_PlateType,bg="white",w
 
 #Save as csv file for AUC or tcplfit2
 ```{r}
-write.csv(AllMetrics_melt,file = "C:/Users/sboyd01/OneDrive - Environmental Protection Agency (EPA)/Profile/Documents/Project-Chronic DNT Organoid/Data Analysis/Network Analysis/Exported Files/Network_scan_Melt.csv")
+write.csv(AllMetrics_melt,file = "~",row.names=F)
 ```
 
 #Plot conrols over time
