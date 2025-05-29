@@ -34,6 +34,7 @@ conflicts_prefer(dplyr::filter())
 ```
 
 ```{r}
+#Set wd to an an "export" folder
 setwd("~")
 
 ```
@@ -54,7 +55,6 @@ data_frame_names<-gsub("_Melt.csv","",basename(csv_files))
 read_datafiles<-function(file){
   data<-read.csv(file)
     data<-as.data.table(data)
-    data<-data[,-1]
     setnames(data,"value","rval")
     data<-data[complete.cases(data$rval),]
     }
