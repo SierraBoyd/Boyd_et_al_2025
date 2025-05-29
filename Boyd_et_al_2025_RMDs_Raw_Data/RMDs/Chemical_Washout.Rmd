@@ -1,0 +1,275 @@
+---
+title: "Chemical Washout Wilcoxin Test"
+author: Sierra Boyd
+output:
+  html_document:
+    theme:
+    toc: false
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+```{r load packages}
+
+library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(data.table)
+library(conflicted)
+library(purrr)
+
+conflicts_prefer(purrr::transpose())
+conflicts_prefer(dplyr::filter())
+
+```
+
+```{r}
+setwd("~")
+getwd()
+```
+
+#Import files and arrange data
+```{r}
+#Indicate input directory
+project.input.dir <-"~"
+
+#Make list of data files 
+csv_files<- list.files(path=project.input.dir, pattern = "_Melt\\.csv$", recursive = T, full.names = T) 
+
+#Make vector for what the names of the basenames of the data files
+data_frame_names<-gsub("_Melt.csv","",basename(csv_files))
+
+#Function to read in data files and remove se endpoints from df
+#Make wllt (well type) column to indicate nontreated with n and treated with a t
+read_datafiles<-function(file){
+  data<-read.csv(file)
+    data<-as.data.table(data)
+    data<-data[,-1]
+    data <- data[, wllt := ifelse(Dosage %in% "Control", 'n','t')]
+    data<-data[complete.cases(data$value),]
+    }
+
+#Use the read_datafiles function made above to read in data files
+datalist<-lapply(csv_files,read_datafiles)
+
+#Assign the names from the vector data_frame_names to the data frames just read in
+for (h in seq_along(datalist)){
+  assign(data_frame_names[h],datalist[[h]])
+}
+
+#Retrive the actual data frames
+data_frames<-mget(data_frame_names)
+
+
+
+
+project.input.dir <-"~"
+
+#Make list of data files 
+csv_files<- list.files(path=project.input.dir, pattern = "_Melt\\.csv$", recursive = T, full.names = T) 
+
+#Make vector for what the names of the basenames of the data files
+data_frame_names<-gsub("_Melt.csv","",basename(csv_files))
+
+#Function to read in data files and remove se endpoints from df
+#Make wllt (well type) column to indicate nontreated with n and treated with a t
+read_datafiles<-function(file){
+  data<-read.csv(file)
+    data<-as.data.table(data)
+    data<-data[,-1]
+    data <- data[, wllt := ifelse(Dosage %in% "Control", 'n','t')]
+    data<-data[complete.cases(data$value),]
+    }
+
+#Use the read_datafiles function made above to read in data files
+datalist<-lapply(csv_files,read_datafiles)
+
+#Assign the names from the vector data_frame_names to the data frames just read in
+for (h in seq_along(datalist)){
+  assign(data_frame_names[h],datalist[[h]])
+}
+
+#Retrive the actual data frames
+data_frames<-mget(data_frame_names)
+
+
+project.input.dir <-"~"
+
+#Make list of data files 
+csv_files<- list.files(path=project.input.dir, pattern = "_Melt\\.csv$", recursive = T, full.names = T) 
+
+#Make vector for what the names of the basenames of the data files
+data_frame_names<-gsub("_Melt.csv","",basename(csv_files))
+
+#Function to read in data files and remove se endpoints from df
+#Make wllt (well type) column to indicate nontreated with n and treated with a t
+read_datafiles<-function(file){
+  data<-read.csv(file)
+    data<-as.data.table(data)
+    data<-data[,-1]
+    data<-data[,-8]
+    data<-data[,-5]
+    data <- data[, wllt := ifelse(Dosage %in% "Control", 'n','t')]
+    data<-data[complete.cases(data$value),]
+    }
+
+#Use the read_datafiles function made above to read in data files
+datalist<-lapply(csv_files,read_datafiles)
+
+#Assign the names from the vector data_frame_names to the data frames just read in
+for (h in seq_along(datalist)){
+  assign(data_frame_names[h],datalist[[h]])
+}
+
+#Retrive the actual data frames
+data_frames<-mget(data_frame_names)
+
+```
+
+#Axon Tracking Data
+##Isolate DOP 27 and DOP 29 to conduct an ANOVA
+##Normalize data 
+##Compute Wilcox paired test
+```{r}
+Axon_Tracking <- Axon_Tracking %>% filter(DOP == 27 | DOP == 29)
+
+Axon_Tracking<-Axon_Tracking%>%
+mutate(Plate_Type=ifelse(grepl("T",Group_ID),"Twenty Four","Six"))
+
+#Mannually change controls to 0.0001
+Axon_Tracking$Dosage<-gsub("Control",0.0001,Axon_Tracking$Dosage)
+Axon_Tracking$Dosage<-as.numeric(Axon_Tracking$Dosage)
+
+#Isolate Control values
+Controls<-subset(Axon_Tracking %>% filter(grepl("n",wllt)))
+
+#Calculate the control means by DOP and Endpoint
+Medians<-Controls %>%
+  group_by(Endpoint,DOP,Plate_Type) %>%
+  summarize (Control_Med=median(value))%>%
+  ungroup()
+
+#Full Join control data back together
+Axon_Tracking <- full_join(Axon_Tracking,Medians, by = c("Endpoint","DOP","Plate_Type"))
+
+#Normalize data to controls
+Axon_Tracking <- Axon_Tracking[,Norm := (value/ Control_Med)* 100]
+
+Axon_Tracking<-Axon_Tracking%>%filter(!grepl("summary",Endpoint))
+
+#Remove any NA values
+Axon_Tracking<-Axon_Tracking%>% filter(!is.na(Norm))
+
+#filter data to only keep the highest 2 concs for each chemical
+Axon_Tracking_filtered<-Axon_Tracking%>%
+  filter(
+    (Chemical=="Dieldrin"& Dosage %in% c(100,30))|
+    (Chemical=="Deltamethrin"& Dosage %in% c(100,30))|
+    (Chemical=="Glyphosate"& Dosage %in% c(10,30))|
+    (Chemical=="Loperamide"& Dosage %in% c(0.1,0.03)))
+
+
+Axon_Tracking_filtered<-Axon_Tracking_filtered%>%select(-c("date","value","wllt","Control_Med"))
+
+Axon_wide<-Axon_Tracking_filtered%>%
+  pivot_wider(names_from=DOP,values_from=Norm,names_prefix="DOP_")
+
+Axon_wide<-Axon_wide%>% filter(!is.na(DOP_27))
+Axon_wide<-Axon_wide%>% filter(!is.na(DOP_29))
+
+
+#Run an ANOVA for every Chemical, Dosage, and Endpoint to compare DOP 27 vs DOP 29
+Wilcox_results<-Axon_wide%>%
+  group_by(Chemical,Endpoint)%>%
+  summarise(wilcox_result=list(wilcox.test(DOP_27,DOP_29,paired=TRUE)),
+.groups="drop")
+
+
+Wilcox_P_results<-Wilcox_results%>%
+  mutate(
+    p_value=sapply(wilcox_result,function(x) x$p.value),
+    statistic=sapply(wilcox_result,function(x) x$statistic))%>%
+  select(Chemical,Endpoint,p_value,statistic)
+
+Sig_Wilcox_P_results <- Wilcox_P_results %>% filter(p_value<0.05)
+
+```
+
+
+#Activity and Network Data
+##Isolate DOP 26 and DOP 28 to conduct an ANOVA
+##Normalize data 
+##Compute Wilcox paired test
+```{r}
+Activity_Network<-rbind(Activity_scan,Network_scan)
+
+Activity_Network<-Activity_Network%>%
+mutate(Plate_Type=ifelse(grepl("T",Group_ID),"Twenty Four","Six"))
+
+Activity_Network <- Activity_Network %>% filter(DOP == 26 | DOP == 28)
+
+#Mannually change controls to 0.0001
+Activity_Network$Dosage<-gsub("Control",0.0001,Activity_Network$Dosage)
+Activity_Network$Dosage<-as.numeric(Activity_Network$Dosage)
+
+#Isolate Control values
+Controls<-subset(Activity_Network %>% filter(grepl("n",wllt)))
+
+#Calculate the control means by DOP and Endpoint
+Activity_Network_Medians<-Controls %>%
+  group_by(Endpoint,DOP,Plate_Type) %>%
+  summarize (Control_Med=median(value))%>%
+  ungroup()
+
+#Full Join control data back together
+Activity_Network <- full_join(Activity_Network,Activity_Network_Medians, by = c("Endpoint","DOP","Plate_Type"))
+
+#Normalize data to controls
+Activity_Network <- Activity_Network[,Norm := (value/ Control_Med)* 100]
+
+#Remove any NA values
+Activity_Network<-Activity_Network%>% filter(!is.na(Norm))
+
+#filter data to only keep the highest 2 concs for each chemical
+Activity_Network_filtered<-Activity_Network%>%
+  filter(
+    (Chemical=="Dieldrin"& Dosage %in% c(100,30))|
+    (Chemical=="Deltamethrin"& Dosage %in% c(100,30))|
+    (Chemical=="Glyphosate"& Dosage %in% c(30,10))|
+    (Chemical=="Loperamide"& Dosage %in% c(0.1,0.03)))
+
+
+Activity_Network_filtered<-Activity_Network_filtered%>%select(-c("value","wllt","Control_Med"))
+
+Activity_Network_wide<-Activity_Network_filtered%>%
+  pivot_wider(names_from=DOP,values_from=Norm,names_prefix="DOP_")
+
+Activity_Network_wide<-Activity_Network_wide%>% filter(!is.na(DOP_26))
+Activity_Network_wide<-Activity_Network_wide%>% filter(!is.na(DOP_28))
+
+
+#Run an Wilcox paired test to compare DOP 26 vs DOP 28
+Activity_Network_Wilcox_results<-Activity_Network_wide%>%
+  group_by(Chemical,Endpoint)%>% #by Endpoint and chemical
+  summarise(wilcox_result=list(wilcox.test(DOP_26,DOP_28,paired=TRUE)),
+.groups="drop")
+
+
+Activity_Network_Wilcox_P_results<-Activity_Network_Wilcox_results%>%
+  mutate(
+    p_value=sapply(wilcox_result,function(x) x$p.value),
+    statistic=sapply(wilcox_result,function(x) x$statistic))%>%
+  select(Chemical,Endpoint,p_value,statistic)
+
+Sig_Activity_Network_Wilcox_P_results <- Activity_Network_Wilcox_P_results %>% filter(p_value<0.05)
+
+```
+
+Join Activity_Network and Axon Tracking washout data set back together for export
+```{r}
+
+All_Wilcox_P_Results<-rbind(Activity_Network_Wilcox_P_results,Wilcox_P_results)
+
+write.csv(All_Wilcox_P_Results,file = "~")
+
+```

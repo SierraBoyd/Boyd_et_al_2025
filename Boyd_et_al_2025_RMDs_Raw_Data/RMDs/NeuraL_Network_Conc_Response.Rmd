@@ -1,0 +1,333 @@
+---
+title: "Neural Network Concentration-Response Modeling"
+author: Sierra Boyd
+output:
+  html_document:
+    theme: cerulean
+    toc: false
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+```{r load packages}
+
+library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(magrittr)
+library(ggplot2)
+library(ggpubr)
+library(ggpattern)
+library(tcpl)
+library(tcplfit2)
+library(stringr)
+library(data.table)
+library(openxlsx)
+library(readxl)
+library(conflicted)
+library(pracma)
+library(pheatmap)
+
+conflicts_prefer(purrr::transpose())
+conflicts_prefer(dplyr::filter())
+
+```
+
+```{r}
+setwd("~")
+```
+
+#Import files and arrange data
+```{r}
+#Indicate input directory
+project.input.dir <-"~"
+
+
+#Make list of data files 
+csv_files<- list.files(path=project.input.dir, pattern = "_Melt\\.csv$", recursive = T, full.names = T) 
+
+#Make vector for what the names of the basenames of the data files
+data_frame_names<-gsub("_Melt.csv","",basename(csv_files))
+
+#Function to read in data files and remove se endpoints from df
+#Make wllt (well type) column to indicate nontreated with n and treated with a t
+read_datafiles<-function(file){
+  data<-read.csv(file)
+    data<-as.data.table(data)
+    data<-data[,-1]
+    setnames(data,"value","rval")
+    data<-data[complete.cases(data$rval),]
+    }
+
+#Use the read_datafiles function made above to read in data files
+datalist<-lapply(csv_files,read_datafiles)
+
+#Assign the names from the vector data_frame_names to the data frames just read in
+for (h in seq_along(datalist)){
+  assign(data_frame_names[h],datalist[[h]])
+}
+
+#Retrive the actual data frames
+data_frames<-mget(data_frame_names)
+
+#Rename DF
+FullScan<- Network_scan
+ 
+#Remove DIV2 and 28 (pre treatment and washout)
+FullScan<-subset(FullScan %>% filter(!grepl("2\\b",DOP)))
+FullScan<-subset(FullScan %>% filter(!grepl(28,DOP)))
+
+#Set nomenclature
+setnames(FullScan,"Dosage","dose")
+setnames(FullScan,"Chemical","trt")
+setnames(FullScan,"DOP","DIV")
+
+#Set control dosages to 0.0001
+FullScan$dose<-gsub("Control",0.0001,FullScan$dose)
+FullScan$dose<-as.numeric(FullScan$dose)
+
+```
+
+#Calculate the AUC
+```{r}
+#Set plate types here- Serial numbers that start in T are 24-well plates and M is for 6-well plates
+FullScan<-FullScan%>%
+  mutate(Plate_Type=ifelse(grepl("T",Group_ID),24,6))
+
+#arrange DIV in the correct order and calculate AUC 
+auc_df<-FullScan %>%
+  group_by(trt,Endpoint, dose, Plate_Type,Group_ID) %>%
+  arrange(DIV)%>%
+  summarize (AUC=trapz(DIV,rval))%>%
+  ungroup()
+
+```
+
+#Prep data for tcplfit2 for loop
+```{r}
+#Set as a DT
+auc_df<-as.data.table(auc_df)
+
+#Check that AUC values are numeric
+auc_df$AUC<-as.numeric(auc_df$AUC)
+
+#make a binary column called wllt for well type: n=non-treated, t=treated
+auc_df <- auc_df[, wllt := ifelse(dose %in% 0.0001, 'n','t')]
+
+#make a new column called bval for baseline value- paste the AUC value for the controls (wllt=n) by endpoint and plate_type
+auc_df[,bval:=median(AUC[wllt=='n']),by=c("Endpoint","Plate_Type")]
+
+#check for NAs
+bval.na <- auc_df[is.na(bval),]
+
+#Normalize data to bval
+auc_df <- auc_df[,resp := (((AUC-bval) / bval))*100]
+
+#calculate baseline median absolute deviation (bmad) for controls at every endpoint 
+auc_df[, bmad := mad(resp[wllt %in% 'n']), by=c("Endpoint")]
+
+#Check for NAs
+auc_df.na <- auc_df[!is.na(bmad),]
+
+#Set cutoff value to 2*bmad
+auc_df[, coff := 2*bmad] 
+
+#Calculate standard deviation by endpoint
+auc_df[, onesd := sd(resp[wllt %in% 'n']), by=Endpoint]
+
+#update variable names
+setnames(auc_df,"Endpoint","acnm")
+setnames(auc_df,"AUC","rval")
+
+```
+
+#Fit to curve using tcplfit2
+##End results are in res table (ignore res_1)
+```{r}
+# create empty vectors
+res <- data.frame()
+datalist <- list()
+
+
+for(i in 1:length(unique(auc_df$acnm))){
+  this.aenm <- unique(auc_df$acnm)[i]
+  aenm.temp <- auc_df[acnm == this.aenm, ]
+  #aenm.temp[, aenm := this.aenm]
+  for(j in 1:length(unique(aenm.temp$trt))){ # used ii so that i isn't being overwritten
+    this.trt <- unique(aenm.temp$trt)[j]
+    this.apid <- unique(aenm.temp[trt %in% this.trt, Plate_Type]) # need to subset by apid
+    temp <- aenm.temp[trt == this.trt | (Plate_Type %in% this.apid & wllt %in% 'n'), ]
+    temp[, trt := trt]
+    row = list(conc=temp$dose, # use conc from the subset
+               resp=temp$resp, # use resp from the subset, note from 03/04/2024: resp is not getting updated by chemical it's all the same for each row
+               bmed= 0, # 0 since we are working with a normalized percent scale
+               cutoff= unique(temp$coff), # find cutoff using 3bmad for EACH aenm (i)
+               # cutoff= unique(temp$coff), # find cutoff using 3bmad for EACH aenm (i)
+               onesd= unique(temp$onesd), # find sd for EACH aenm (i)
+               name= this.trt, # update here as well
+               assay= unique(temp$acnm)) # instead of assay we can use this to identify the endpoint for each curve fit 
+    # run concentration-response modeling (1st plotting option)
+    out = concRespCore(row,
+                       fitmodels = c("cnst", "hill", "gnls", "poly1", "poly2", "pow", "exp2", "exp3", "exp4",
+                                     "exp5"),conthits=TRUE,do.plot=FALSE)
+    datalist[[j]] <- out
+    res1 <- do.call(rbind, datalist)
+  }  
+  res <- rbind(res, res1)
+}
+setDT(res)
+res[, hitc := ifelse(hitcall>=0.9,1,0)]
+res[hitc==1, c('name','assay')] 
+
+# save res file as an excel
+write.xlsx(res, './20240920_Axion_Res.xlsx')
+
+
+file.dir <- paste("~", Sys.Date(), ".pdf", sep="")
+file.path <- paste(file.dir, file.name, sep="")
+dir.create(path=file.dir, showWarnings = FALSE, recursive = TRUE)
+pdf(file.path, 
+    width = 12, 
+    height = 10)
+# plot results using `concRespPlot`(2nd plotting option)
+for(i in 1:nrow(res)){
+  concRespPlot(res[i,],ymin=-100,ymax=1000) 
+}
+
+dev.off()
+```
+
+#Plot log 10 AC50
+```{r}
+#create a new df by selecting specific columns from res
+heatmap_data<-select(res, c("name","assay","ac50", "hitcall","top"))
+
+#update variable names
+setnames(heatmap_data,"name","trt")
+setnames(heatmap_data,"assay","acnm")
+
+#create a matrix with top values- this will be used to indicate directionality of hits in the heatmap
+top_matrix<-select(heatmap_data,c("trt","acnm","top","hitcall"))
+
+#If the hitcall is less than 0.9, set top to 1
+top_matrix$top[top_matrix$hitcall<0.9]<-1
+
+#isolate only needed columns
+top_matrix<-select(top_matrix,c("trt","acnm","top"))
+
+#Pivot that df to a wide format
+top_matrix<-top_matrix%>%
+  pivot_wider(names_from=acnm,values_from=top) %>%
+  column_to_rownames(var="trt")
+
+#set as a matrix
+top_matrix<-as.matrix(top_matrix)
+
+#Set AC50 values to 0 if the hitcall is less than 0.9
+heatmap_data$ac50[heatmap_data$hitcall<0.9]<-0
+
+#Select only needed columns
+heatmap_data<-select(heatmap_data, c("trt","acnm","ac50"))
+
+#set ac50 as numeric
+heatmap_data$ac50<-as.numeric(heatmap_data$ac50)
+
+#Pivot to create long df
+heatmap_wide<-heatmap_data%>%
+  pivot_wider(names_from=acnm,values_from=ac50) %>%
+  column_to_rownames(var="trt")
+
+#Edit rownames for Pheatmap
+MetricNames<-c("Burst Frequency (Counts/min)",
+               "Burst Peak (Hz)",
+               "Cluster Frequency (Counts/min)",
+               "Number of Burst per Cluster",
+               "Cluster Duration (ms)",
+               "Inter-Burst-Interval (ms)",
+               "Inter-Cluster-Interval (ms)",
+               "Number of Spikes per Burst",
+                "Burst Duration (ms)")
+
+colnames(heatmap_wide)<-MetricNames
+
+#Set up annotation column for Cluster vs Bursts
+Group<-c("Burst","Burst","Cluster","Burst","Cluster","Burst","Cluster","Burst","Burst")
+annotated_df<-data.frame(Group=Group)
+rownames(annotated_df)<-MetricNames
+ann_colors<-list(Group=c(Cluster="dodgerblue4",Burst="springgreen4"))
+
+#Create a Matrix
+heatmap_wide<-as.matrix(heatmap_wide)
+```
+
+```{r}
+#Make a new df that will store the ac50 values when logging below
+ac50_for_log<-heatmap_wide
+
+#If the ac50 value is 0, set to 1, so we can take the log10 below (these are inactive curve-fits)
+ac50_for_log[ac50_for_log==0]<-1
+
+#create a potency matrix by taking the log10(ac50_for_log))+3 (add 3, so that all values are positive)
+potency_matrix<-(log10(ac50_for_log))+3
+
+#If a value equals 3 then set as 1 (these are inactive curve-fits)
+potency_matrix[potency_matrix==3]<-1
+
+#Update the sign in the potency matrix by multiplying by the sign indicated in the top_matrix created above (this tells us the directionality of the hits)
+potency_matrix<-potency_matrix*sign(top_matrix)
+
+#Take the inverse of the potency matrix (So a lower value will be represented with a darker color in the pheatmap to show a more potent chemical and vice versa)
+potency_matrix<-1/potency_matrix
+
+#Set inactive curve-fits to almost 0 (this is needed to manually set inactive curve-fits to white in the heatmap)
+potency_matrix[potency_matrix==1]<-1e-10
+
+#If the absolute value of the potency is greater tahn 0.55, cap the value at 0.55 
+potency_matrix<-pmax(pmin(potency_matrix,0.55),-0.55)
+
+#Manually set breaks
+breaks<-seq(-0.55,0.55,by=0.05)
+
+#manually insert 1e-10 into break list
+breaks<-sort(unique(c(breaks,1e-10)))
+
+#set color pallete accoring to break list
+pal<-colorRampPalette(c("firebrick","white","springgreen4"))(length(breaks)-1)
+
+#Manually set 1e-10 as white
+zero_bin_index<-which.min(abs(breaks - 1e-10))
+pal[zero_bin_index]<-"white"
+
+#Make a display matrix which will show the AC50 values in the heatmap, round to 3 sigfigs
+display_matrix<-round(ac50_for_log,3)
+
+display_matrix[display_matrix==1]<-NA
+
+#Edit rownames for Pheatmap
+MetricNames<-c("Burst Frequency (Counts/min)",
+               "Burst Peak (Hz)",
+               "Cluster Frequency (Counts/min)",
+               "Number of Burst per Cluster",
+               "Cluster Duration (ms)",
+               "Inter-Burst-Interval (ms)",
+               "Inter-Cluster-Interval (ms)",
+               "Number of Spikes per Burst",
+                "Burst Duration (ms)")
+
+colnames(display_matrix)<-MetricNames
+colnames(potency_matrix)<-MetricNames
+
+
+Network_AC50_Updated<-pheatmap(potency_matrix,
+        cluster_rows=F,
+        cluster_cols=T,
+        color=pal,
+        breaks=breaks,
+        display_numbers=display_matrix, number_color="white",fontsize_number=9,
+        annotation_col=annotated_df,
+        annotation_colors = ann_colors,
+        annotation_names_col=FALSE)
+  
+ggsave("Network_AC50_Updated.png",plot=Network_AC50_Updated,bg="white",width=6,height=5.5)
+
+```

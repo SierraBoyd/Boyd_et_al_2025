@@ -1,0 +1,325 @@
+---
+title: "General Activity Pre-Processing"
+author: Sierra Boyd
+output:
+  html_document:
+    theme:
+    toc: false
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+#Load Packages
+```{r}
+
+library(tidyverse)
+library(knitr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggpubr)
+library(data.table)
+library(conflicted)
+library(readxl)
+library(openxlsx)
+library(patchwork)
+conflicts_prefer(purrr::transpose())
+conflicts_prefer(dplyr::filter())
+
+```
+
+```{r}
+setwd("~")
+```
+
+#Import files and arrange data
+```{r}
+#Indicate input directory
+project.input.dir <-"~"
+
+#Make list of data files 
+csv_files<- list.files(path=project.input.dir, pattern = "_activity_summary_metrics\\.csv$", recursive = T, full.names = T) 
+
+#Make vector for what the names of the basenames of the data files
+data_frame_names<-gsub("_activity_summary_metrics.csv","",basename(csv_files))
+
+#Function to read in data files and make Group_IDs by separating assayTag
+read_datafiles<-function(file){
+  data<-read.csv(file)
+  data<-data[-c(1),]
+  data$date<-gsub("-","",data$date)
+  data$assayTag<-gsub(" ","_",data$assayTag)
+  data<- data %>% separate(assayTag, c('DOP','Week','Type', 'PlateID'))
+  data<-select(data,-c("DOP"))
+  setnames(data,"div","DOP")
+  data$Group_ID <- as.character(paste(data$"Group", data$"PlateID",data$"wellNo", sep = "_"))
+  data<-as.data.frame(data)
+    }
+  
+#Use the read_datafiles function made above to read in data files
+datalist<-lapply(csv_files,read_datafiles)
+
+#Assign the names from the vector data_frame_names to the data frames just read in
+for (i in seq_along(datalist)){
+  assign(data_frame_names[i],datalist[[i]])
+}
+
+#Retrive the actual data frames
+data_frames<-mget(data_frame_names)
+
+#combine data frames into new df
+fulldata<-rbindlist(data_frames,use.names=TRUE,fill=TRUE) 
+
+#Make list of meta files
+Meta_file<-list.files(path=project.input.dir,pattern="_Meta\\.csv$", recursive = T, full.names = T)
+
+#Read in meta files and make Group_IDs, and join with fulldata df, make Endpoint columns numeric
+for (j in Meta_file){
+  meta<-read.csv(j)
+  meta$wellNo<-as.character(meta$wellNo)
+  meta$PlateID<-as.character(meta$PlateID)
+  meta$Group_ID <- as.character(paste(meta$"Group", meta$"PlateID",meta$"wellNo", sep = "_")) #Make a groupID
+  meta<-select(meta,-c("PlateID","wellNo","Group"))
+  fulldata <- dplyr::full_join(meta,fulldata, by = "Group_ID") #merge with meta data
+  fulldata[,8:26]<-lapply(fulldata[,8:26],as.numeric)
+  fulldata<-subset(fulldata %>% filter(!grepl("Detached",Notes))) #Remove wells where the BrainSphere Detached
+  order<-c(2,5,7,9,12,14,16,19,21,23,26,28) #set recording days as a factor
+fulldata$DOP<-factor(fulldata$DOP,levels=order)
+Doseorder<-c("Control",0.03,0.1,0.3,1,3,10,30,100) #set concentrations as a factor
+fulldata$Dosage<-factor(fulldata$Dosage,levels=Doseorder)
+
+  }
+
+```
+
+#Make a melted table to export for tcplfit2 or AUC analysis
+```{r}
+#Melt table to long format
+fulldata_melt <- melt(fulldata, id.vars = c("DOP","Chemical","Dosage","Group_ID"),
+                          measure.vars =c("activeArea","firingRate_mean","amplitude_mean","ISI_mean"))
+
+#Check and remove duplicated rows
+fulldata_melt<-fulldata_melt%>%distinct(DOP,Chemical,Dosage,Group_ID,variable,value,.keep_all=TRUE)
+
+#Update variable name
+setnames(fulldata_melt, "variable","Endpoint")
+
+#Export data in a long data format
+write.csv(fulldata_melt,file = "~")
+
+
+```
+
+#Arrange data and plot controls by plate type over time
+```{r}
+#Indicate Plate Type for normalization below- Plate serial numbers starting in T are 24-well plates, M is for 6-well plates
+fulldata_melt<-fulldata_melt%>%
+  mutate(Plate_Type=ifelse(grepl("T",Group_ID),"Twenty Four","Six"))
+
+#Isolate controls
+fulldata_melt_Controls <-fulldata_melt%>%  filter((Dosage== "Control"))
+
+#Check and remove NA values in controls
+fulldata_melt_Controls<-subset(fulldata_melt_Controls,!is.na(value))
+
+#set variables as factors
+fulldata_melt_Controls$DOP<-as.factor(fulldata_melt_Controls$DOP)
+fulldata_melt_Controls$value<-as.numeric(fulldata_melt_Controls$value)
+
+#Check for duplicated rows and remove
+fulldata_melt_Controls<-fulldata_melt_Controls%>%distinct(Group_ID,DOP,Chemical, Dosage, Plate_Type, value, Endpoint,.keep_all=TRUE)
+
+#Update Endpoint Names
+fulldata_melt_Controls$Endpoint<-gsub("activeArea","Active Area",fulldata_melt_Controls$Endpoint)
+fulldata_melt_Controls$Endpoint<-gsub("firingRate_mean","Firing Rate (Hz)",fulldata_melt_Controls$Endpoint)
+fulldata_melt_Controls$Endpoint<-gsub("amplitude_mean","Spike Amplitude (µV)",fulldata_melt_Controls$Endpoint)
+fulldata_melt_Controls$Endpoint<-gsub("ISI_mean","Inter-Spike-Interval (ms)",fulldata_melt_Controls$Endpoint)
+
+fulldata_melt$Endpoint<-gsub("activeArea","Active Area",fulldata_melt$Endpoint)
+fulldata_melt$Endpoint<-gsub("firingRate_mean","Firing Rate (Hz)",fulldata_melt$Endpoint)
+fulldata_melt$Endpoint<-gsub("amplitude_mean","Spike Amplitude (µV)",fulldata_melt$Endpoint)
+fulldata_melt$Endpoint<-gsub("ISI_mean","Inter-Spike-Interval (ms)",fulldata_melt$Endpoint)
+
+#Graph as box plot
+Activity_By_PlateType<-ggplot(fulldata_melt_Controls,aes(x=as.factor(DOP),y=value,fill=Plate_Type,color=Plate_Type,shape=Plate_Type))+
+  geom_boxplot()+
+  geom_point(position=position_dodge(width=0.75))+
+  theme_minimal()+
+  labs(
+  y=paste(""),
+  x="Days on Plate")+
+  scale_fill_manual(values=c("grey90","grey20"))+
+  scale_color_manual(values=c("grey40","grey10"))+
+  scale_shape_manual(values=c(15,19))+
+  facet_wrap(~Endpoint,scales="free",ncol=4)
+
+Activity_By_PlateType
+
+#Save Control box plots
+ggsave("ActivityScan_By_PlateType.png",plot=Activity_By_PlateType,bg="white",width=10,height=2)
+
+```
+
+#Graph controls over time for each endpoint 
+```{r}
+
+#Make vector of the unique endpoints in this df to call below
+Endpoint<-unique(fulldata_melt_Controls$Endpoint)
+
+#Make empty list for plots to fill below
+ActivityScan_Control_BoxPlots_plotlist<-list()
+
+#For Loop to plot all Endpoints for all raw control values
+for (k in Endpoint){
+   df_subset<-fulldata_melt_Controls[fulldata_melt_Controls$Endpoint==k,]
+  
+  ActivityScan_Control_BoxPlots<-ggplot(df_subset,aes(x=factor(DOP),y=value,color=DOP))+
+  theme_minimal()+
+  labs(y=k,x="Days on Plate")+
+  scale_color_manual(values=c("black","black","black","black","black","black","black","black","black","black","black","black"))+
+  geom_boxplot(alpha=0.6,position = position_dodge(width=0.7))+
+  geom_point(position = position_dodge(width=0.7))+
+  theme(legend.position="none")
+
+    
+   print(ActivityScan_Control_BoxPlots)
+  
+   ActivityScan_Control_BoxPlots_plotlist[[k]]<-ActivityScan_Control_BoxPlots
+}
+
+#Put all Control plots in one figure and save
+ActivityScan_Control_BoxPlots<-ggarrange(plotlist=ActivityScan_Control_BoxPlots_plotlist)
+ActivityScan_Control_BoxPlots<-annotate_figure(ActivityScan_Control_BoxPlots, top = text_grob("Activity Scan Ontogeny for Controls",size=14))
+ActivityScan_Control_BoxPlots
+
+ggsave("ActivityScanScan_Control_BoxPlots.png",plot=ActivityScan_Control_BoxPlots,bg="white",width=5.03,height=4.0)
+
+#Combine ISI and active area plots for figure in manuscript
+Figure_plotlist<-c(ActivityScan_Control_BoxPlots_plotlist["Active Area"],ActivityScan_Control_BoxPlots_plotlist["Inter-Spike-Interval (ms)"])
+
+Plots_for_Figure<-patchwork::wrap_plots(Figure_plotlist,ncol=2)+plot_annotation(title="General Activity",theme = theme(plot.title = element_text(hjust = 0.5)))
+
+Plots_for_Figure
+
+ggsave("ActivityScan_Plots_forFig.png",plot=Plots_for_Figure,bg="white",width=6,height=2.57)
+
+```
+
+#Normalize data to control
+```{r}
+#Find mean of control data by DOP and Endpoint
+fulldata_melt_Controls<-fulldata_melt_Controls%>% group_by(DOP,Endpoint,Plate_Type) %>% 
+  summarize(control=mean(value))%>%
+  ungroup()
+
+#Merge back to df
+fulldata_Norm <- full_join(fulldata_melt,fulldata_melt_Controls, by = c("DOP","Endpoint","Plate_Type"))
+
+#Normalize by Plate_Type and by DOP- do this for every chemical, dosage, Group_ID, and DOP
+fulldata_Norm<-fulldata_Norm%>% group_by(DOP,Chemical,Dosage,Group_ID,Endpoint,Plate_Type) %>% 
+  summarize(Norm=((value/control)*100))%>%
+  ungroup()
+
+#Remove duplicated rows
+fulldata_Norm<-fulldata_Norm%>%distinct(Group_ID,DOP,Endpoint,.keep_all=TRUE)
+
+```
+
+#Calculate se
+```{r}
+#Make se function
+se <- function(x) {
+  sd(x) / sqrt(length(x))
+}
+
+#Calculate the SE of controls for graphing below
+se_results<-fulldata_Norm%>% dplyr::group_by(DOP,Endpoint,Chemical,Dosage) %>%
+  summarise(se = se(Norm))%>%
+  ungroup()
+
+#full join SE data back to original data set
+fulldata_Norm<-full_join(fulldata_Norm,se_results, by=c("Chemical","DOP","Dosage","Endpoint"))
+
+#Remove duplicated rows
+fulldata_Norm<-fulldata_Norm%>%distinct(Group_ID,DOP,Chemical,Endpoint,Plate_Type,.keep_all=TRUE)
+
+```
+
+#Find mean of the Norm data
+```{r}
+#Calculate the means
+mean_Results<-fulldata_Norm%>% group_by(DOP,Endpoint,Chemical,Dosage) %>% 
+  summarise(Mean = mean(Norm))%>%
+  ungroup()
+
+#full join Mean data back to original data set
+fulldata_Norm<-full_join(fulldata_Norm,mean_Results, by=c("Chemical","DOP","Dosage","Endpoint"))
+
+#Remove duplicated rows
+fulldata_Norm<-fulldata_Norm%>%distinct(Group_ID,DOP,Chemical,Endpoint,Plate_Type,.keep_all=TRUE)
+
+```
+
+#Filter out pre-treatment days
+```{r}
+#Remove DOP 2 which is the pre-treatment date
+fulldata_Norm <- fulldata_Norm %>% filter(DOP != 2)
+
+#update variable names
+setnames(fulldata_Norm,"Chemical","trt")
+setnames(fulldata_Norm,"Dosage","dose")
+setnames(fulldata_Norm,"DOP","DIV")
+
+```
+
+#Plot Line graphs for all endpoints and chemicals
+```{r}
+#Create vector for each endpoint and chemical to loop through below
+Endpoint<-unique(fulldata_Norm$Endpoint)
+Chemical<-unique(fulldata_Norm$trt)
+
+#Set as DT
+fulldata_Norm<-as.data.table(fulldata_Norm)
+
+#Make empty lists for for loop below
+Total_plots<-list()
+plotlist<-list()
+res1<-list()
+
+#Loop through each chemical and endpoint and plot
+for (p in Chemical){
+  df_chemical<-fulldata_Norm%>%filter(trt==p)
+  
+  for (o in Endpoint){
+    df_endpoint<-df_chemical %>% filter(Endpoint==o)
+    
+    p_plot<-ggplot(df_endpoint,aes(x=factor(DIV),y=Mean,group=dose,color=factor(dose)))+
+                     geom_point(size=2.5,aes(shape=factor(dose),color=factor(dose)))+
+                     geom_line(size=1.25,alpha=0.6,aes(color=factor(dose)))+
+                    geom_errorbar(aes(ymin=Mean-se,ymax=Mean),width=0.3,alpha=0.8)+
+                    scale_color_manual(values=c("gray20","darkgreen","springgreen2","turquoise3","dodgerblue3","navy"))+
+                    scale_shape_manual(values=c(15,16,17,18,7,10))+ 
+                    geom_hline(yintercept=100,linetype="dashed",color="black")+
+                     labs(title=paste(p),
+                          y=paste(o,"(% of Control)", sep=" "),
+                          x="Days on Plate",
+                          color="Concentration (uM)",
+                          shape="Concentration (uM)")+
+                     theme_minimal()
+                   
+                   print(p_plot)
+                  plotlist[[o]]<-p_plot
+  }
+  res1<-list(res1,plotlist)
+}
+
+Total_plots<-list(res1)
+pdf("Activity_LineGraphs.pdf",width=7,height=5)
+for (plot in Total_plots){
+  print(plot)
+}
+
+dev.off()
+
+```
+
