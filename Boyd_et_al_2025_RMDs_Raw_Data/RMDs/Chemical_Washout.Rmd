@@ -24,8 +24,8 @@ conflicts_prefer(dplyr::filter())
 ```
 
 ```{r}
+#Set wd to an an "export" folder
 setwd("~")
-getwd()
 ```
 
 #Import files and arrange data
@@ -44,7 +44,6 @@ data_frame_names<-gsub("_Melt.csv","",basename(csv_files))
 read_datafiles<-function(file){
   data<-read.csv(file)
     data<-as.data.table(data)
-    data<-data[,-1]
     data <- data[, wllt := ifelse(Dosage %in% "Control", 'n','t')]
     data<-data[complete.cases(data$value),]
     }
@@ -270,6 +269,6 @@ Join Activity_Network and Axon Tracking washout data set back together for expor
 
 All_Wilcox_P_Results<-rbind(Activity_Network_Wilcox_P_results,Wilcox_P_results)
 
-write.csv(All_Wilcox_P_Results,file = "~")
+write.csv(All_Wilcox_P_Results,file = "~",row.names=F)
 
 ```
