@@ -32,8 +32,8 @@ options(warn=-1)
 ```
 
 ```{r}
+#Set wd to an an "export" folder
 setwd("~")
-getwd()
 ```
 
 
@@ -53,7 +53,6 @@ neuron_data_frame_names<-gsub("_metrics.csv","",basename(neuron_csv_files))
 #Function to read in data files and make Group_IDs by separating assayTag
 read_datafiles<-function(file){
   data<-read.csv(file)
-  data<-data[-c(1),]
   data$date<-gsub("-","",data$date)
   data$assayTag<-gsub(" ","_",data$assayTag)
   data<- data %>% separate(assayTag, c('DOP','Week','Type', 'PlateID'))
@@ -195,7 +194,7 @@ Axon_Tracking_Melt <- melt(AllMetrics, id.vars = c("DOP","date","Chemical","Dosa
 setnames(Axon_Tracking_Melt, "variable","Endpoint")
 
 #Save as a CSV
-write.csv(Axon_Tracking_Melt,file = "~")
+write.csv(Axon_Tracking_Melt,file = "~",row.names=F)
 
 ```
 
