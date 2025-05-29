@@ -29,6 +29,7 @@ conflicts_prefer(dplyr::filter())
 ```
 
 ```{r}
+#Set wd to an an "export" folder
 setwd("~")
 ```
 
@@ -105,7 +106,7 @@ fulldata_melt<-fulldata_melt%>%distinct(DOP,Chemical,Dosage,Group_ID,variable,va
 setnames(fulldata_melt, "variable","Endpoint")
 
 #Export data in a long data format
-write.csv(fulldata_melt,file = "~")
+write.csv(fulldata_melt,file = "~",row.names=F)
 
 
 ```
